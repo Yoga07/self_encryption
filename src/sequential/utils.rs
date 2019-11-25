@@ -9,17 +9,17 @@
 use super::{Pad, SelfEncryptionError, StorageError, COMPRESSION_QUALITY, PAD_SIZE};
 use crate::{
     data_map::ChunkDetails,
-    encryption::{self, Iv, Key, IV_SIZE, KEY_SIZE},
+    encryption,
 };
+use crate::sequential::{KEY_SIZE, Key};
 use brotli::{self, enc::BrotliEncoderParams};
 #[cfg(test)]
 use rand::Rng;
-use rust_sodium;
 #[cfg(test)]
 use std::cmp;
 use std::io::Cursor;
 
-pub fn get_pad_key_and_iv(chunk_index: usize, chunks: &[ChunkDetails]) -> (Pad, Key, Iv) {
+pub fn get_pad_key_and_iv(chunk_index: usize, chunks: &[ChunkDetails]) -> (Pad, Key) {
     let (n_1, n_2) = match chunk_index {
         0 => (chunks.len() - 1, chunks.len() - 2),
         1 => (0, chunks.len() - 1),
@@ -31,28 +31,26 @@ pub fn get_pad_key_and_iv(chunk_index: usize, chunks: &[ChunkDetails]) -> (Pad, 
 
     let mut pad = [0u8; PAD_SIZE];
     let mut key = [0u8; KEY_SIZE];
-    let mut iv = [0u8; IV_SIZE];
 
-    for (pad_iv_el, element) in pad
+    for (pad_el, element) in pad
         .iter_mut()
-        .chain(iv.iter_mut())
         .zip(this_pre_hash.iter().chain(n_2_pre_hash.iter()))
     {
-        *pad_iv_el = *element;
+        *pad_el = *element;
     }
 
     for (key_el, element) in key.iter_mut().zip(n_1_pre_hash.iter()) {
         *key_el = *element;
     }
 
-    (Pad(pad), Key(key), Iv(iv))
+    (Pad(pad), Key(key))
 }
 
 pub fn encrypt_chunk<E: StorageError>(
     content: &[u8],
-    pad_key_iv: (Pad, Key, Iv),
+    pad_key_iv: (Pad, Key),
 ) -> Result<Vec<u8>, SelfEncryptionError<E>> {
-    let (pad, key, iv) = pad_key_iv;
+    let (pad, key) = pad_key_iv;
     let mut compressed = vec![];
     let mut enc_params: BrotliEncoderParams = Default::default();
     enc_params.quality = COMPRESSION_QUALITY;
@@ -60,17 +58,17 @@ pub fn encrypt_chunk<E: StorageError>(
     if result.is_err() {
         return Err(SelfEncryptionError::Compression);
     }
-    let encrypted = encryption::encrypt(&compressed, &key, &iv);
-    Ok(xor(&encrypted, &pad))
+    let ec = encryption::encrypt(compressed.as_mut_slice(), &key);
+    Ok(xor(&ec, &pad))
 }
 
 pub fn decrypt_chunk<E: StorageError>(
     content: &[u8],
-    pad_key_iv: (Pad, Key, Iv),
+    pad_key: (Pad, Key),
 ) -> Result<Vec<u8>, SelfEncryptionError<E>> {
-    let (pad, key, iv) = pad_key_iv;
-    let xor_result = xor(content, &pad);
-    let decrypted = encryption::decrypt(&xor_result, &key, &iv)?;
+    let (pad, key) = pad_key;
+    let mut xor_result = xor(content, &pad);
+    let decrypted = encryption::decrypt(xor_result.as_mut_slice(), &key)?;
     let mut decompressed = vec![];
     let result = brotli::BrotliDecompress(&mut Cursor::new(decrypted), &mut decompressed);
     if result.is_err() {
@@ -87,9 +85,9 @@ pub fn xor(data: &[u8], &Pad(pad): &Pad) -> Vec<u8> {
         .collect()
 }
 
-pub fn initialise_rust_sodium() {
-    assert!(rust_sodium::init().is_ok());
-}
+//pub fn initialise_rust_sodium() {
+//    assert!(rust_sodium::init().is_ok());
+//}
 
 #[cfg(test)]
 pub fn make_random_pieces<'a, T: Rng>(

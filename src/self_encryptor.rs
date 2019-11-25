@@ -11,13 +11,13 @@ use super::{
 };
 use crate::{
     data_map::{ChunkDetails, DataMap},
-    encryption::{self, Iv, Key, IV_SIZE, KEY_SIZE},
+    encryption,
     sequencer::{Sequencer, MAX_IN_MEMORY_SIZE},
     util::{BoxFuture, FutureExt},
 };
 use brotli::{self, enc::BrotliEncoderParams};
 use futures::{future, Future};
-use rust_sodium;
+//use rust_sodium;
 use std::{
     cell::RefCell,
     cmp,
@@ -27,18 +27,23 @@ use std::{
     rc::Rc,
 };
 use unwrap::unwrap;
+use crate::sequential::{PAD_SIZE, Pad, Key};
 
-const HASH_SIZE: usize = 32;
-const PAD_SIZE: usize = (HASH_SIZE * 3) - KEY_SIZE - IV_SIZE;
+//const HASH_SIZE: usize = 32;
+//pub const KEY_SIZE: usize = 16;
+//pub const PAD_SIZE: usize = (HASH_SIZE * 3) - KEY_SIZE;
 
-struct Pad(pub [u8; PAD_SIZE]);
+//struct Pad(pub [u8; PAD_SIZE]);
+//pub struct Key(pub [u8; KEY_SIZE]);
 
 // Helper function to XOR a data with a pad (pad will be rotated to fill the length)
 fn xor(data: &[u8], &Pad(pad): &Pad) -> Vec<u8> {
-    data.iter()
+    let res: Vec<u8> = data.iter()
         .zip(pad.iter().cycle())
         .map(|(&a, &b)| a ^ b)
-        .collect()
+        .collect();
+    dbg!(res.clone());
+    res
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -404,7 +409,8 @@ where
                 let pos = get_start_end_positions(self.file_size, i as u32).0 as usize;
 
                 assert!(this_size > 0);
-
+                dbg!(this_size.clone());
+                dbg!(pos.clone());
                 let pki = get_pad_key_and_iv(i as u32, &new_map, self.file_size);
                 let content = match encrypt_chunk(&(*self.sequencer)[pos..pos + this_size], pki) {
                     Ok(content) => content,
@@ -579,15 +585,15 @@ where
     S: Storage + 'static,
 {
     let name = &state.sorted_map[chunk_number as usize].hash;
-    let (pad, key, iv) = get_pad_key_and_iv(chunk_number, &state.sorted_map, state.map_size);
+    let (pad, key) = get_pad_key_and_iv(chunk_number, &state.sorted_map, state.map_size);
 
     state
         .storage
         .get(name)
         .map_err(SelfEncryptionError::Storage)
         .and_then(move |content| {
-            let xor_result = xor(&content, &pad);
-            encryption::decrypt(&xor_result, &key, &iv).map_err(|_| SelfEncryptionError::Decryption)
+            let mut xor_result = xor(&content, &pad);
+            encryption::decrypt(xor_result.as_mut_slice(), &key).map_err(|_| SelfEncryptionError::Decryption)
         })
         .and_then(|decrypted| {
             let mut decompressed = vec![];
@@ -600,9 +606,9 @@ where
 
 fn encrypt_chunk<E: StorageError>(
     content: &[u8],
-    pki: (Pad, Key, Iv),
+    pk: (Pad, Key),
 ) -> Result<Vec<u8>, SelfEncryptionError<E>> {
-    let (pad, key, iv) = pki;
+    let (pad, key) = pk;
     let mut compressed = vec![];
     let mut enc_params: BrotliEncoderParams = Default::default();
     enc_params.quality = COMPRESSION_QUALITY;
@@ -610,7 +616,11 @@ fn encrypt_chunk<E: StorageError>(
     if result.is_err() {
         return Err(SelfEncryptionError::Compression);
     }
-    let encrypted = encryption::encrypt(&compressed, &key, &iv);
+    let mut encrypted = vec![];
+    for x in compressed.chunks_exact_mut(16) {
+        encrypted.append(encryption::encrypt(x, &key));
+    }
+
     Ok(xor(&encrypted, &pad))
 }
 
@@ -618,7 +628,7 @@ fn get_pad_key_and_iv(
     chunk_number: u32,
     sorted_map: &[ChunkDetails],
     map_size: u64,
-) -> (Pad, Key, Iv) {
+) -> (Pad, Key) {
     let n_1 = get_previous_chunk_number(map_size, chunk_number);
     let n_2 = get_previous_chunk_number(map_size, n_1);
     let this_pre_hash = &sorted_map[chunk_number as usize].pre_hash;
@@ -626,22 +636,20 @@ fn get_pad_key_and_iv(
     let n_2_pre_hash = &sorted_map[n_2 as usize].pre_hash;
 
     let mut pad = [0u8; PAD_SIZE];
-    let mut key = [0u8; KEY_SIZE];
-    let mut iv = [0u8; IV_SIZE];
+    let mut key = [0u8; 16];
 
-    for (pad_iv_el, element) in pad
+    for (pad_el, element) in pad
         .iter_mut()
-        .chain(iv.iter_mut())
         .zip(this_pre_hash.iter().chain(n_2_pre_hash.iter()))
     {
-        *pad_iv_el = *element;
+        *pad_el = *element;
     }
 
     for (key_el, element) in key.iter_mut().zip(n_1_pre_hash.iter()) {
         *key_el = *element;
     }
 
-    (Pad(pad), Key(key), Iv(iv))
+    (Pad(pad), Key(key))
 }
 
 // Returns the chunk range [start, end) that is overlapped by the byte range defined by `position`

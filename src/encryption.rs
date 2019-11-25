@@ -8,18 +8,25 @@
 
 // TODO(dirvine) Look at aessafe 256X8 cbc it should be very much faster  :01/03/2015
 
-use rust_sodium::crypto::secretbox::{self, KEYBYTES, NONCEBYTES};
+use aes::Aes128;
+use aes::block_cipher_trait::generic_array::GenericArray;
+use aes::block_cipher_trait::BlockCipher;
+use crate::sequential::Key;
 
-pub use rust_sodium::crypto::secretbox::{Key, Nonce as Iv};
 pub type DecryptionError = ();
 
-pub const KEY_SIZE: usize = KEYBYTES;
-pub const IV_SIZE: usize = NONCEBYTES;
-
-pub fn encrypt(data: &[u8], key: &Key, iv: &Iv) -> Vec<u8> {
-    secretbox::seal(data, iv, key)
+pub fn encrypt(data: &mut [u8], &Key(key): &Key) -> Vec<u8> {
+    let arr = GenericArray::clone_from_slice(&key);
+    let mut block = GenericArray::clone_from_slice(data);
+    let aes = Aes128::new(&arr);
+    aes.encrypt_block(&mut block);
+    data.to_vec()
 }
 
-pub fn decrypt(encrypted_data: &[u8], key: &Key, iv: &Iv) -> Result<Vec<u8>, DecryptionError> {
-    secretbox::open(encrypted_data, iv, key)
+pub fn decrypt(encrypted_data: &mut [u8], &Key(key): &Key) -> Result<Vec<u8>, DecryptionError> {
+    let arr = GenericArray::clone_from_slice(&key);
+    let mut block = GenericArray::clone_from_slice(encrypted_data);
+    let aes = Aes128::new(&arr);
+    aes.decrypt_block(&mut block);
+    Ok(block.to_vec())
 }

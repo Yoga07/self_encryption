@@ -16,9 +16,10 @@ pub use super::{
     SelfEncryptionError, Storage, StorageError, COMPRESSION_QUALITY, MAX_CHUNK_SIZE, MAX_FILE_SIZE,
     MIN_CHUNK_SIZE,
 };
-use crate::encryption::{IV_SIZE, KEY_SIZE};
 
 pub const HASH_SIZE: usize = 32;
-pub const PAD_SIZE: usize = (HASH_SIZE * 3) - KEY_SIZE - IV_SIZE;
+pub const KEY_SIZE: usize = 16;
+pub const PAD_SIZE: usize = (HASH_SIZE * 3) - KEY_SIZE;
 
 pub struct Pad(pub [u8; PAD_SIZE]);
+pub struct Key(pub [u8; KEY_SIZE]);
